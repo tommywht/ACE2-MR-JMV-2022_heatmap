@@ -1,0 +1,316 @@
+# heatmap for visualizing results
+library(tidyverse)
+library(ggplot2)
+library(ggpubr)
+library(openxlsx)
+library(scales)
+library(ggtext)
+
+# Heatmap - exp --> COVID ----
+cleaning <- function(res, i2, pleio, or = T){
+  
+  isq <- reduce(i2, rbind)
+  
+  isq_pleio <- full_join(isq, pleio, by = c("exp" = "exposure")) %>%
+    select(exp, i2, pval) %>% rename(int.pval = pval)
+  
+  pleio <- c()
+  for(i in 1:length(isq_pleio$i2)){
+    pleio <- c(pleio, isq_pleio$i2[i], isq_pleio$int.pval[i], NA)
+  }
+  
+  res$pleio <- pleio
+  
+  res <- res %>% filter(exposure != "Liability to T2D (log odds)",
+                 exposure != "cigperday") %>%
+    mutate(method = case_when(
+      method == "Inverse variance weighted" ~ "IVW",
+      method == "Weighted median" ~ "WM",
+      TRUE ~ as.character(method)
+    ),
+    exposure = case_when(
+      exposure == "waist-to-hip ratio" ~ "Waist-to-hip ratio (SD)\n(#SNP: 199-202)",
+      exposure == "body mass index || id:ieu-b-40" ~ "Body mass index (SD)\n(#SNP: 487-488)",
+      exposure == "diastolic blood pressure || id:ieu-b-39" ~ "Diastolic blood pressure (SD)\n(#SNP: 443-445)",
+      exposure == "edu_attain" ~ "Educational attainment (SD)\n(#SNP: 566-568)",
+      exposure == "lifetime_smoking" ~ "Lifetime smoking index (SD)\n(#SNP: 117-118)",
+      exposure == "Serum 25-Hydroxyvitamin D levels || id:ebi-a-GCST90000615" ~ "Vitamin D (SD)\n(#SNP: 107-112)",
+      exposure == "smkinit" ~ "Smoking initiation (SD of log odds)\n(#SNP: 191-193)",
+      exposure == "systolic blood pressure || id:ieu-b-38" ~ "Systolic blood pressure (SD)\n(#SNP: 439-442)",
+      exposure == "Fasting glucose" ~ "Fasting glucose (mmol/L)\n(#SNP: 66-67)",
+      exposure == "2-hr glucose" ~ "2-hour glucose (mmol/L)\n(#SNP: 13)", 
+      exposure == "Hba1c" ~ "HbA1c (%)\n(#SNP: 71-72)",
+      TRUE ~ as.character(exposure)),
+    outcome = str_c(outcome, "_", method))
+  
+  if(or){
+    res <- res %>% TwoSampleMR::generate_odds_ratios() %>%
+      select(exposure, nsnp, or, or_lci95, or_uci95, pval, outcome, pleio)
+  }
+  else{
+    res <- res %>% mutate(lci = b - 1.96 * se,
+                          uci = b + 1.96 * se) %>%
+      select(exposure, nsnp, b, lci, uci, pval, outcome, pleio)
+  }
+}
+
+expa2 <- cleaning(readRDS("result_a2.rds"),
+                 readRDS("i2_a2.rds"),
+                 readRDS("pleio_a2.rds"))
+
+expb2 <- cleaning(readRDS("result_b2.rds"),
+                  readRDS("i2_b2.rds"),
+                  readRDS("pleio_b2.rds"))
+
+expc2 <- cleaning(readRDS("result_c2.rds"),
+                  readRDS("i2_c2.rds"),
+                  readRDS("pleio_c2.rds"))
+
+dat <- rbind(expa2, expb2, expc2) %>%
+  mutate(exposure = factor(exposure, levels = c("Lifetime smoking index (SD)\n(#SNP: 117-118)",
+                                                "Smoking initiation (SD of log odds)\n(#SNP: 191-193)",
+                                                "Body mass index (SD)\n(#SNP: 487-488)",
+                                                "Waist-to-hip ratio (SD)\n(#SNP: 199-202)",
+                                                "Educational attainment (SD)\n(#SNP: 566-568)",
+                                                "Fasting glucose (mmol/L)\n(#SNP: 66-67)",
+                                                "2-hour glucose (mmol/L)\n(#SNP: 13)", 
+                                                "HbA1c (%)\n(#SNP: 71-72)",
+                                                "Systolic blood pressure (SD)\n(#SNP: 439-442)",
+                                                "Diastolic blood pressure (SD)\n(#SNP: 443-445)",
+                                                "Vitamin D (SD)\n(#SNP: 107-112)")),
+         outcome = factor(outcome, levels = c("A2_IVW", "A2_MR Egger", "A2_WM",
+                                              "B2_IVW", "B2_MR Egger", "B2_WM",
+                                              "C2_IVW", "C2_MR Egger", "C2_WM")),
+         sig = case_when(
+           pval <= 0.05 & pval > 0.05/11 ~ "*",
+           pval <= 0.05/11 ~ "#",
+           TRUE ~ NA_character_
+         ),
+         pleio_sym = case_when(
+           pleio >= 50 ~ "<sup>a</sup>",
+           pleio <= 0.05 ~ "<sup>b</sup>",
+           TRUE ~ NA_character_
+         ),
+         or_ = str_c(formatC(or, digits = 2, format = "f", flag = "#"),
+                     "<br>(", formatC(or_lci95, digits = 2, format = "f", flag = "#"), ", ",
+                     formatC(or_uci95, digits = 2, format = "f", flag = "#"), ")"),
+         or_sig = case_when(
+           !is.na(sig) ~ str_c("<strong>", or_, "</strong>"),
+           is.na(sig) ~ or_
+         ),
+         or_sig = case_when(
+           !is.na(pleio_sym) ~ str_c(or_sig, pleio_sym),
+           is.na(pleio_sym) ~ as.character(or_sig),
+           TRUE ~ as.character(or_sig)
+         ))
+
+
+# height <- 21
+# width <- 32
+# pdf(file = "heatmap_expcovid.pdf",
+#     height = height, width = width, onefile = F)
+# 
+# ggplot(dat, aes(x = outcome, y = exposure, fill = or)) + theme_bw() + 
+#   theme(text = element_text(size = 20, colour = "black"),
+#         plot.background = element_blank(),
+#         panel.grid.major = element_blank(),
+#         panel.border = element_blank(),
+#         axis.ticks = element_blank(),
+#         axis.text = element_text(size = 25, colour = "black"),
+#         axis.text.x = element_text(angle = 90),
+#         axis.title = element_blank()) +
+#   geom_tile(colour = "black", lwd = 1, linetype = 1) + 
+#   scale_fill_gradient2(low = muted("blue"), high = muted("red"), midpoint = 1, 
+#                        breaks = c(0.5, 1.0, 1.5, 2.0),
+#                        limits = c(0.45, 2.1)) + 
+#   geom_richtext(aes(label = or_), size = 8, label.padding = unit(rep(0, 4), "pt"),
+#                 fill = NA, label.color = NA) +
+#   guides(fill = guide_colorbar(title = "Odds ratio", barheight = 10))
+# 
+# dev.off()
+
+# heat map - exp --> ACE2 ----
+i2 <- readRDS("i2_ace2.rds") %>% reduce(rbind)
+pleio <- readRDS("pleio_ace2.rds")
+
+i2_pleio <- full_join(i2, pleio, by = c("exp" = "exposure")) %>%
+  select(exp, i2, pval) %>% rename(int.pval = pval)
+
+pleio <- c()
+for(i in 1:length(i2_pleio$i2)){
+  pleio <- c(pleio, i2_pleio$i2[i], i2_pleio$int.pval[i], NA)
+}
+
+expace <- readRDS("result_ace2.rds") 
+expace$pleio <- pleio
+
+expace <- expace %>%
+  filter(exposure != "Liability to T2D (log odds)",
+         exposure != "cigperday") %>%
+  mutate(
+  exposure = case_when(
+    exposure == "waist-to-hip ratio" ~ "Waist-to-hip ratio (SD)\n(#SNP: 200)",
+    exposure == "body mass index || id:ieu-b-40" ~ "Body mass index (SD)\n(#SNP: 488)",
+    exposure == "diastolic blood pressure || id:ieu-b-39" ~ "Diastolic blood pressure (SD)\n(#SNP: 439)",
+    exposure == "edu_attain" ~ "Educational attainment (SD)\n(#SNP: 567)",
+    exposure == "lifetime_smoking" ~ "Lifetime smoking index (SD)\n(#SNP: 117)",
+    exposure == "Serum 25-Hydroxyvitamin D levels || id:ebi-a-GCST90000615" ~ "Vitamin D (SD)\n(#SNP: 107)",
+    exposure == "smkinit" ~ "Smoking initiation (SD of log odds)\n(#SNP: 192)",
+    exposure == "systolic blood pressure || id:ieu-b-38" ~ "Systolic blood pressure (SD)\n(#SNP: 442)",
+    exposure == "Fasting glucose" ~ "Fasting glucose (mmol/L)\n(#SNP: 66)",
+    exposure == "2-hr glucose" ~ "2-hour glucose (mmol/L)\n(#SNP: 12)",
+    exposure == "Hba1c" ~ "HbA1c (%)\n(#SNP: 72)",
+    TRUE ~ as.character(exposure)),
+  exposure = factor(exposure, levels = c("Lifetime smoking index (SD)\n(#SNP: 117)",
+                                                "Smoking initiation (SD of log odds)\n(#SNP: 192)",
+                                                "Body mass index (SD)\n(#SNP: 488)",
+                                                "Waist-to-hip ratio (SD)\n(#SNP: 200)",
+                                                "Educational attainment (SD)\n(#SNP: 567)",
+                                                "Fasting glucose (mmol/L)\n(#SNP: 66)",
+                                                "2-hour glucose (mmol/L)\n(#SNP: 12)",
+                                                "HbA1c (%)\n(#SNP: 72)",
+                                                "Systolic blood pressure (SD)\n(#SNP: 442)",
+                                                "Diastolic blood pressure (SD)\n(#SNP: 439)",
+                                                "Vitamin D (SD)\n(#SNP: 107)")),
+  method = case_when(
+           method == "Inverse variance weighted" ~ "IVW",
+           method == "Weighted median" ~ "WM",
+           TRUE ~ as.character(method)
+         ),
+         sig = case_when(
+           pval <= 0.05 & pval > 0.05/11 ~ "*",
+           pval <= 0.05/11 ~ "#",
+           TRUE ~ NA_character_
+         ),
+         pleio_sym = case_when(
+           pleio >= 50 ~ "<sup>a</sup>",
+           pleio <= 0.05 ~ "<sup>b</sup>",
+           TRUE ~ NA_character_
+         ),
+  lci = b - 1.96 * se,
+  uci = b + 1.96 * se,
+         b_ = str_c(formatC(b, digits = 2, format = "f", flag = "#"),
+                     "<br>(", formatC(lci, digits = 2, format = "f", flag = "#"), ", ",
+                     formatC(uci, digits = 2, format = "f", flag = "#"), ")"),
+         b_sig = case_when(
+           !is.na(sig) ~ str_c("<b>", b_, "</b>"),
+           is.na(sig) ~ b_
+         ),
+         b_sig = case_when(
+           !is.na(pleio_sym) ~ str_c(b_sig, pleio_sym),
+           is.na(pleio_sym) ~ as.character(b_sig),
+           TRUE ~ as.character(b_sig)
+         ))
+
+
+# multipanel figure with table ----
+height <- 25
+width <- 50
+pdf(file = "all fig_compile_SD.pdf",
+    height = height, width = width, onefile = F)
+    
+a <- ggplot(dat, aes(x = outcome, y = exposure, fill = or)) + theme_bw() + 
+  theme(text = element_text(size = 30, colour = "black"),
+        plot.background = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.border = element_blank(),
+        axis.ticks = element_blank(),
+        axis.text = element_text(size = 30, colour = "black"),
+        axis.text.x = element_text(angle = 90),
+        axis.title = element_blank()) +
+  geom_tile(colour = "black", lwd = 1, linetype = 1) + 
+  scale_fill_gradient2(low = muted("blue"), high = muted("red"), midpoint = 1, 
+                       breaks = c(0.5, 1.0, 1.5, 2.0),
+                       limits = c(0.45, 2.1)) + 
+  geom_richtext(aes(label = or_sig), size = 10, label.padding = unit(rep(0, 4), "pt"),
+                fill = NA, label.color = NA) +
+  guides(fill = guide_colorbar(title = "Odds ratio", barheight = 10))
+
+b <- ggplot(expace, aes(x = method, y = exposure, fill = b)) + theme_bw() + 
+  theme(text = element_text(size = 30, colour = "black"),
+        plot.background = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.border = element_blank(),
+        axis.ticks = element_blank(),
+        axis.text = element_text(size = 30, colour = "black"),
+        axis.title = element_blank()) +
+  geom_tile(colour = "black", lwd = 1, linetype = 1) + 
+  scale_fill_gradient2(low = muted("blue"), high = muted("red"), midpoint = 0, 
+                       breaks = c(-0.4, 0, 0.4),
+                       limits = c(-0.45, 0.45)) + 
+  geom_richtext(aes(label = b_sig), size = 10, label.padding = unit(rep(0, 4), "pt"),
+                fill = NA, label.color = NA) +
+  guides(fill = guide_colorbar(title = "Beta", barheight = 10))
+
+c <- readRDS("mediation result table.rds") %>%
+  rename(`COVID19-A2` = A2, `COVID19-B2` = B2, `COVID19-C2` = C2) %>%
+  mutate(Exposure = case_when(
+    Exposure == "Education attainment (SD)" ~ "Educational attainment (SD)",
+    TRUE ~ as.character(Exposure)
+  )) %>%
+  ggtexttable(rows = NULL, theme = ttheme(
+    base_size = 30, padding = unit(c(4, 8), "mm")
+  ))
+  
+
+ggarrange(a,
+          ggarrange(b, c, ncol = 1, nrow = 2, heights = c(4.5, 1), labels = c("B", "C"), 
+                    font.label = list(
+                      size = 35
+                    )),
+          ncol = 2, nrow = 1, widths = c(1.8, 1), labels = "A",
+          font.label = list(
+            size = 35
+          ))
+
+dev.off()
+
+# separately plot figure a and b ----
+# figure A - exp -> COVID
+height <- 25
+width <- 30
+pdf(file = "exp_covid_SD.pdf",
+    height = height, width = width, onefile = F)
+
+ggplot(dat, aes(x = outcome, y = exposure, fill = or)) + theme_bw() + 
+  theme(text = element_text(size = 30, colour = "black"),
+        plot.background = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.border = element_blank(),
+        axis.ticks = element_blank(),
+        axis.text = element_text(size = 30, colour = "black"),
+        axis.text.x = element_text(angle = 90),
+        axis.title = element_blank()) +
+  geom_tile(colour = "black", lwd = 1, linetype = 1) + 
+  scale_fill_gradient2(low = muted("blue"), high = muted("red"), midpoint = 1, 
+                       breaks = c(0.5, 1.0, 1.5, 2.0),
+                       limits = c(0.45, 2.1)) + 
+  geom_richtext(aes(label = or_sig), size = 10, label.padding = unit(rep(0, 4), "pt"),
+                fill = NA, label.color = NA) +
+  guides(fill = guide_colorbar(title = "Odds ratio", barheight = 10))
+
+dev.off()
+
+# figure B - exp -> ACE2
+height <- 25
+width <- 20
+pdf(file = "exp_ACE2_SD.pdf",
+    height = height, width = width, onefile = F)
+
+ggplot(expace, aes(x = method, y = exposure, fill = b)) + theme_bw() + 
+  theme(text = element_text(size = 30, colour = "black"),
+        plot.background = element_blank(),
+        panel.grid.major = element_blank(),
+        panel.border = element_blank(),
+        axis.ticks = element_blank(),
+        axis.text = element_text(size = 30, colour = "black"),
+        axis.title = element_blank()) +
+  geom_tile(colour = "black", lwd = 1, linetype = 1) + 
+  scale_fill_gradient2(low = muted("blue"), high = muted("red"), midpoint = 0, 
+                       breaks = c(-0.4, 0, 0.4),
+                       limits = c(-0.45, 0.45)) + 
+  geom_richtext(aes(label = b_sig), size = 10, label.padding = unit(rep(0, 4), "pt"),
+                fill = NA, label.color = NA) +
+  guides(fill = guide_colorbar(title = "Beta", barheight = 10))
+
+dev.off()
